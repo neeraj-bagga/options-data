@@ -1,0 +1,77 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Logs / temp
+*.log
+*.tmp
+*.cache
+.cache/
+
+# Test / coverage / type-checking
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pytype/
+.pyre/
+.dmypy.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# === OS / Editors ===
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# IDEs
+.vscode/
+.idea/
+*.code-workspace
+
+# Environment files
+.env
+.env.*
+*.env
+
+# === Project-specific generated data ===
+# Large downloaded datasets and temp artifacts
+market_data/
+temp_jugaad/
+
+# Tests output dirs (if created)
+test_jugaad_data/
+
+# Optional local scripts / scratch
+scripts_local/
+notebooks/
+reports/
+
+# Backup / swap files
+*~
+*.swp
+*.swo

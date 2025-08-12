@@ -266,3 +266,19 @@ To add new strategies or improve the framework:
 ## 📄 License
 
 This framework is provided for educational and research purposes. Use at your own risk in live trading environments. 
+
+## Portfolio Backtesting Framework (New)
+
+Added modules:
+- `risk_metrics.py`: compute per-symbol std dev and beta vs `nifty`, and classify IV regime (low/medium/high) via average IV percentile.
+- `trading_strategies.py`: reusable `ShortStrangle` and `IronCondor` with tunable params and exit rules (TP/SL/DTE).
+- `portfolio_framework.py`: portfolio allocator applying IV-based buying power (25/35/50% default), 75/25 index-vs-stock split, beta*delta neutrality, and theta cap (<=0.2% per day on total buying power).
+- `run_portfolio_backtest.py`: CLI to compute high-level stats and run a portfolio backtest on locally downloaded data.
+
+Quick run:
+
+```bash
+python -m strategies.run_portfolio_backtest
+```
+
+Tune allocations/strategies by editing `AllocationConfig` and `TradingConfig` inside `run_portfolio_backtest.py`. 

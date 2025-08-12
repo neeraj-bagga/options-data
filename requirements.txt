@@ -16,3 +16,4 @@ six>=1.16.0
 # Options pricing libraries
 py_vollib>=1.0.1
 QuantLib>=1.25.0
+py_vollib_vectorized

@@ -27,11 +27,34 @@ class OptionsDataLoader:
         self.data_dir = Path(data_dir)
         self.options_dir = self.data_dir / "options_data"
         self.stock_dir = self.data_dir / "stock_data"
+        # On-disk cache for processed options (Greeks/IV)
+        self.greeks_cache_dir = self.data_dir / "greeks_cache"
         
         # Cache for loaded data
         self._options_cache = {}
         self._stock_cache = {}
-        
+        # Track missing file warnings to avoid noisy repeats (disabled)
+        # self._missing_warned: set[str] = set()
+
+    def get_available_stock_dates(self, symbol: str) -> List[str]:
+        """
+        Get list of available stock dates for a symbol by scanning daily files.
+        Returns sorted list of YYYY-MM-DD dates.
+        """
+        symbol_dir = self.stock_dir / symbol
+        if not symbol_dir.exists():
+            return []
+        dates: List[str] = []
+        for p in symbol_dir.glob("*.csv"):
+            name = p.stem
+            # skip complete file
+            if name.endswith("_complete"):
+                continue
+            if name.startswith(f"{symbol}_"):
+                datestr = name.replace(f"{symbol}_", "")
+                dates.append(datestr)
+        return sorted(dates)
+
     def get_available_symbols(self) -> List[str]:
         """
         Get list of available symbols in the data
@@ -51,7 +74,7 @@ class OptionsDataLoader:
         
         Args:
             symbol: Symbol name
-            
+        
         Returns:
             List of available dates in YYYY-MM-DD format
         """
@@ -72,6 +95,40 @@ class OptionsDataLoader:
                 dates.append(date_part)
         
         return sorted(dates)
+
+    # ------- Processed options (Greeks/IV) on-disk cache -------
+    def _greeks_cache_path(self, symbol: str, date: str) -> Path:
+        sym_dir = self.greeks_cache_dir / symbol
+        sym_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{symbol}_greeks_{date}.csv"
+        return sym_dir / filename
+
+    def load_processed_options_cache(self, symbol: str, date: str) -> Optional[pd.DataFrame]:
+        """
+        Load cached processed options (with Greeks/IV) if present.
+        Returns DataFrame or None if not found/could not be loaded.
+        """
+        path = self._greeks_cache_path(symbol, date)
+        if not path.exists():
+            return None
+        try:
+            df = pd.read_csv(path)
+            # basic sanity check
+            if 'STRIKE_PR' in df.columns and 'OPTION_TYP' in df.columns:
+                return df
+            return None
+        except Exception:
+            return None
+
+    def save_processed_options_cache(self, symbol: str, date: str, df: pd.DataFrame) -> None:
+        """
+        Save processed options (with Greeks/IV) for reuse in follow-up runs.
+        """
+        try:
+            path = self._greeks_cache_path(symbol, date)
+            df.to_csv(path, index=False)
+        except Exception:
+            pass
     
     def load_options_data(self, symbol: str, date: str, use_cache: bool = True) -> Optional[pd.DataFrame]:
         """
@@ -81,7 +138,7 @@ class OptionsDataLoader:
             symbol: Symbol name
             date: Date in YYYY-MM-DD format
             use_cache: Whether to use cached data
-            
+        
         Returns:
             DataFrame with options data or None if not found
         """
@@ -95,7 +152,10 @@ class OptionsDataLoader:
         filepath = self.options_dir / symbol / filename
         
         if not filepath.exists():
-            print(f"⚠️  Options data file not found: {filepath}")
+            # key = f"opt:{filepath}"
+            # if key not in self._missing_warned:
+            #     print(f"⚠️  Options data file not found: {filepath}")
+            #     self._missing_warned.add(key)
             return None
         
         try:
@@ -124,7 +184,7 @@ class OptionsDataLoader:
             symbol: Symbol name
             date: Date in YYYY-MM-DD format
             use_cache: Whether to use cached data
-            
+        
         Returns:
             DataFrame with stock data or None if not found
         """
@@ -161,7 +221,10 @@ class OptionsDataLoader:
                 except Exception as e:
                     print(f"❌ Error loading stock data from complete file: {e}")
             
-            print(f"⚠️  Stock data file not found: {filepath}")
+            # key = f"stk:{filepath}"
+            # if key not in self._missing_warned:
+            #     print(f"⚠️  Stock data file not found: {filepath}")
+            #     self._missing_warned.add(key)
             return None
         
         try:
@@ -175,7 +238,7 @@ class OptionsDataLoader:
             if use_cache:
                 self._stock_cache[cache_key] = df
             
-            print(f"✅ Loaded stock data for {symbol} on {date}")
+            #print(f"✅ Loaded stock data for {symbol} on {date}")
             return df
             
         except Exception as e:

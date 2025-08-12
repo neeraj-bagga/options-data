@@ -271,3 +271,39 @@ atm = loader.get_atm_options(symbol, date)
 ### License and Use
 
 This repository is for research/education. Use at your own risk for live trading. Respect data source terms and rate limits.
+
+### Strategy and Portfolio Backtesting (New)
+
+Run the built-in portfolio backtest over locally downloaded data:
+
+```bash
+python -m strategies.run_portfolio_backtest
+```
+
+What it does:
+- Computes high-level metrics (daily return std dev and beta vs `nifty`) for a subset of symbols.
+- Classifies IV regime using `nifty` (low/medium/high) to set portfolio buying power (25/35/50% by default).
+- Allocates buying power 75% to index (`symbol_index`) and 25% to stocks (`symbols_stocks`).
+- Opens Short Strangle and Iron Condor positions with tunable deltas and DTE targets.
+- Enforces beta*delta neutrality and caps daily theta at 0.2% of buying power.
+- Prints portfolio performance summary (final value, total/annualized return, volatility, Sharpe).
+
+Where to tune:
+- `strategies/run_portfolio_backtest.py` → edit `AllocationConfig` and `TradingConfig`.
+  - `symbol_index` (default: `nifty`): index used to size buying power and neutrality baseline.
+  - `symbols_stocks`: list of stocks to trade alongside the index (e.g., `['reliance','tcs']`).
+  - `entry_frequency_days` (default: 10): open new positions every N days (faster backtests).
+  - `use_strangle` / `use_iron_condor`: enable/disable strategy blocks.
+  - `strangle_params.target_delta` (e.g., 0.16), `iron_params.short_delta`, `iron_params.wing_width_pct`.
+  - `exit_rules`: `take_profit_pct`, `stop_loss_pct`, `max_days_to_expiry`.
+  - `iv_low_pct`/`iv_med_pct`/`iv_high_pct`: buying power based on IV regime.
+  - `index_pct`/`stock_pct`: 75/25 split by default.
+  - `theta_cap_pct_per_day`: cap daily theta to 0.2% of buying power.
+
+Performance tips:
+- Reduce date range inside `run_portfolio_backtest.py`.
+- Increase `entry_frequency_days` to 10–21 to open less frequently.
+- Limit `symbols_stocks` to a few liquid names.
+
+Outputs:
+- Console summary and an in-memory equity curve (`results['equity_curve']`) you can save or plot.

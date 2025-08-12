@@ -8,17 +8,15 @@ Uses py_vollib for accurate Black-Scholes calculations
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Union
+from time import perf_counter
 import warnings
 warnings.filterwarnings('ignore')
 
-try:
-    import py_vollib.black_scholes.implied_volatility as bs_iv
-    import py_vollib.black_scholes.greeks.analytical as bs_greeks
-    from py_vollib.black_scholes import black_scholes as bs
-    PY_VOLLIB_AVAILABLE = True
-except ImportError:
-    PY_VOLLIB_AVAILABLE = False
-    print("Warning: py_vollib not available. Install with: pip install py_vollib")
+# Always require py_vollib and py_vollib_vectorized
+import py_vollib.black_scholes.implied_volatility as bs_iv
+from py_vollib.black_scholes import black_scholes as bs
+import py_vollib_vectorized  # noqa: F401 - patches py_vollib to accept vectorized inputs
+from py_vollib_vectorized import get_all_greeks
 
 try:
     import QuantLib as ql
@@ -27,187 +25,30 @@ except ImportError:
     QUANTLIB_AVAILABLE = False
     print("Warning: QuantLib not available.")
 
+    
+
 class OptionsCalculatorLib:
     """
     Comprehensive options calculator using py_vollib library
     """
     
     def __init__(self, risk_free_rate: float = 0.055):
-        """
-        Initialize the options calculator
-        
-        Args:
-            risk_free_rate: Annual risk-free rate (default: 5%)
-        """
         self.risk_free_rate = risk_free_rate
-        
-        if not PY_VOLLIB_AVAILABLE:
-            raise ImportError("py_vollib is required. Install with: pip install py_vollib")
+        # py_vollib is required and imported above
     
     def black_scholes_call(self, S: float, K: float, T: float, r: float, sigma: float) -> float:
-        """
-        Calculate call option price using Black-Scholes model
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            
-        Returns:
-            Call option price
-        """
         if T <= 0:
             return max(0, S - K)
-        
         return bs('c', S, K, T, r, sigma)
     
     def black_scholes_put(self, S: float, K: float, T: float, r: float, sigma: float) -> float:
-        """
-        Calculate put option price using Black-Scholes model
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            
-        Returns:
-            Put option price
-        """
         if T <= 0:
             return max(0, K - S)
-        
         return bs('p', S, K, T, r, sigma)
-    
-    def calculate_delta(self, S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> float:
-        """
-        Calculate option delta using py_vollib
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            option_type: 'CE' for call, 'PE' for put
-            
-        Returns:
-            Delta value
-        """
-        if T <= 0:
-            if option_type == 'CE':
-                return 1.0 if S > K else 0.0
-            else:  # PE
-                return -1.0 if S < K else 0.0
-        
-        flag = 'c' if option_type == 'CE' else 'p'
-        return bs_greeks.delta(flag, S, K, T, r, sigma)
-    
-    def calculate_gamma(self, S: float, K: float, T: float, r: float, sigma: float) -> float:
-        """
-        Calculate option gamma (same for calls and puts)
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            
-        Returns:
-            Gamma value
-        """
-        if T <= 0:
-            return 0.0
-        
-        return bs_greeks.gamma('c', S, K, T, r, sigma)  # Same for calls and puts
-    
-    def calculate_theta(self, S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> float:
-        """
-        Calculate option theta
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            option_type: 'CE' for call, 'PE' for put
-            
-        Returns:
-            Theta value (per year)
-        """
-        if T <= 0:
-            return 0.0
-        
-        flag = 'c' if option_type == 'CE' else 'p'
-        return bs_greeks.theta(flag, S, K, T, r, sigma)
-    
-    def calculate_vega(self, S: float, K: float, T: float, r: float, sigma: float) -> float:
-        """
-        Calculate option vega (same for calls and puts)
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            
-        Returns:
-            Vega value
-        """
-        if T <= 0:
-            return 0.0
-        
-        return bs_greeks.vega('c', S, K, T, r, sigma)  # Same for calls and puts
-    
-    def calculate_rho(self, S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> float:
-        """
-        Calculate option rho
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            option_type: 'CE' for call, 'PE' for put
-            
-        Returns:
-            Rho value
-        """
-        if T <= 0:
-            return 0.0
-        
-        flag = 'c' if option_type == 'CE' else 'p'
-        return bs_greeks.rho(flag, S, K, T, r, sigma)
     
     def calculate_implied_volatility(self, option_price: float, S: float, K: float, T: float, 
                                    r: float, option_type: str, tolerance: float = 1e-5, 
                                    max_iterations: int = 100) -> float:
-        """
-        Calculate implied volatility using py_vollib
-        
-        Args:
-            option_price: Observed option price
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            option_type: 'CE' for call, 'PE' for put
-            tolerance: Convergence tolerance
-            max_iterations: Maximum iterations
-            
-        Returns:
-            Implied volatility
-            
-        Raises:
-            ValueError: If IV calculation fails or parameters are invalid
-        """
         # Type validation
         try:
             option_price = float(option_price)
@@ -217,65 +58,41 @@ class OptionsCalculatorLib:
             r = float(r)
             option_type = str(option_type)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Type conversion failed: {e}. "
-                           f"Params: price={option_price} ({type(option_price)}), "
-                           f"S={S} ({type(S)}), K={K} ({type(K)}), "
-                           f"T={T} ({type(T)}), r={r} ({type(r)})")
-        
+            raise ValueError(f"Type conversion failed: {e}.")
         if T <= 0:
             raise ValueError(f"Cannot calculate IV for expired option (T={T})")
-        
-        if option_price <= 0:
-            raise ValueError(f"Invalid option price: {option_price}")
-        
-        if S <= 0 or K <= 0:
-            raise ValueError(f"Invalid stock price ({S}) or strike price ({K})")
-        
-        # Check if option price is below intrinsic value (data quality issue)
+        if option_price <= 0 or S <= 0 or K <= 0:
+            raise ValueError("Invalid parameters for IV calculation")
         if option_type == 'CE':
             intrinsic_value = max(0, S - K)
-        else:  # PE
+        else:
             intrinsic_value = max(0, K - S)
-        
-        if option_price < intrinsic_value:
-            raise ValueError(f"Option price ({option_price}) is below intrinsic value ({intrinsic_value}). "
-                           f"This indicates invalid data. S={S}, K={K}, type={option_type}")
-        
+        tol = 0.02
+        min_allowed = intrinsic_value * (1 - tol)
+        if option_price < min_allowed:
+            raise ValueError(
+                f"Option price ({option_price}) is below intrinsic value ({intrinsic_value}). "
+                f"This indicates invalid data. S={S}, K={K}, type={option_type}"
+            )
+        option_price = max(option_price, intrinsic_value * 1.000001)
         try:
             flag = 'c' if option_type == 'CE' else 'p'
             iv = bs_iv.implied_volatility(option_price, S, K, T, r, flag)
-            
             if np.isnan(iv) or np.isinf(iv) or iv < 0:
                 raise ValueError(f"Invalid IV result: {iv}")
-            
             return iv
         except Exception as e:
-            raise ValueError(f"Failed to calculate implied volatility: {e}. "
-                           f"Params: price={option_price}, S={S}, K={K}, T={T}, r={r}, type={option_type}")
+            raise ValueError(f"Failed to calculate implied volatility: {e}.")
     
-    def calculate_all_greeks(self, S: float, K: float, T: float, r: float, sigma: float, 
-                           option_type: str) -> Dict[str, float]:
-        """
-        Calculate all Greeks for an option
-        
-        Args:
-            S: Current stock price
-            K: Strike price
-            T: Time to expiration (in years)
-            r: Risk-free rate
-            sigma: Volatility
-            option_type: 'CE' for call, 'PE' for put
-            
-        Returns:
-            Dictionary with all Greeks
-        """
-        return {
-            'delta': self.calculate_delta(S, K, T, r, sigma, option_type),
-            'gamma': self.calculate_gamma(S, K, T, r, sigma),
-            'theta': self.calculate_theta(S, K, T, r, sigma, option_type),
-            'vega': self.calculate_vega(S, K, T, r, sigma),
-            'rho': self.calculate_rho(S, K, T, r, sigma, option_type)
-        }
+    def _calculate_all_greeks_vectorized_single(self, S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> Dict[str, float]:
+        flags = np.array(['c' if option_type == 'CE' else 'p'])
+        S_arr = np.array([S], dtype='float64')
+        K_arr = np.array([K], dtype='float64')
+        T_arr = np.array([T], dtype='float64')
+        r_arr = np.array([r], dtype='float64')
+        sigma_arr = np.array([sigma], dtype='float64')
+        out = get_all_greeks(flags, S_arr, K_arr, T_arr, r_arr, sigma_arr, model='black_scholes', return_as='dict')
+        return {k: float(v[0]) for k, v in out.items()}
     
     def calculate_moneyness(self, S: float, K: float) -> float:
         """Calculate moneyness (S/K ratio)"""
@@ -339,8 +156,8 @@ class OptionsCalculatorLib:
         if sigma is None:
             sigma = self.calculate_implied_volatility(option_price, S, K, T, self.risk_free_rate, option_type)
         
-        # Calculate all Greeks
-        greeks = self.calculate_all_greeks(S, K, T, self.risk_free_rate, sigma, option_type)
+        # Calculate all Greeks using a single vectorized call
+        greeks = self._calculate_all_greeks_vectorized_single(S, K, T, self.risk_free_rate, sigma, option_type)
         
         # Calculate other metrics
         metrics = {
@@ -359,24 +176,11 @@ class OptionsCalculatorLib:
 
 def calculate_expiry_days(expiry_date: str, current_date: str = None) -> float:
     """
-    Calculate days to expiry
-    
-    Args:
-        expiry_date: Expiry date in various formats ('YYYY-MM-DD', 'DD-MMM-YYYY', etc.)
-        current_date: Current date in 'YYYY-MM-DD' format (defaults to today)
-        
-    Returns:
-        Days to expiry as a float
-        
-    Raises:
-        ValueError: If date parsing fails
+    Calculate days to expiry as a fraction of years. Supports multiple date formats.
     """
-    from datetime import datetime
-    
+    from datetime import datetime as _dt
     if current_date is None:
-        current_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # Try multiple date formats
+        current_date = _dt.now().strftime('%Y-%m-%d')
     date_formats = [
         '%Y-%m-%d',      # 2024-08-05
         '%d-%b-%Y',      # 01-Apr-2020
@@ -385,125 +189,137 @@ def calculate_expiry_days(expiry_date: str, current_date: str = None) -> float:
         '%d/%m/%Y',      # 05/08/2024
         '%m/%d/%Y',      # 08/05/2024
         '%d-%m-%Y',      # 05-08-2024
-        '%Y-%m-%d %H:%M:%S',  # 2024-08-05 00:00:00
+        '%Y-%m-%d %H:%M:%S',
     ]
-    
     expiry = None
     for fmt in date_formats:
         try:
-            expiry = datetime.strptime(expiry_date, fmt)
+            expiry = _dt.strptime(str(expiry_date), fmt)
             break
         except ValueError:
             continue
-    
     if expiry is None:
-        raise ValueError(f"Failed to parse expiry date '{expiry_date}' with any supported format. "
-                        f"Supported formats: {date_formats}")
-    
+        # Fallback: try pandas to_datetime
+        try:
+            expiry = pd.to_datetime(expiry_date).to_pydatetime()
+        except Exception:
+            return 0.0
     try:
-        current = datetime.strptime(current_date, '%Y-%m-%d')
+        current = _dt.strptime(current_date, '%Y-%m-%d')
         days_diff = (expiry - current).days
-        return max(0, days_diff / 365.0)  # Convert to years
-    except ValueError as e:
-        raise ValueError(f"Failed to parse current date '{current_date}'. Error: {e}")
+        return max(0, days_diff / 365.0)
+    except ValueError:
+        return 0.0
 
 
-def process_options_data_lib(options_df: pd.DataFrame, stock_price: float, 
-                           current_date: str = None, risk_free_rate: float = 0.05) -> pd.DataFrame:
-    """
-    Process options data using library-based calculations
-    
-    Args:
-        options_df: DataFrame with options data
-        stock_price: Current stock price
-        current_date: Current date for expiry calculation
-        risk_free_rate: Risk-free rate
-        
-    Returns:
-        DataFrame with added metrics
-        
-    Raises:
-        ValueError: If data processing fails
-    """
+def _norm_cdf(x: np.ndarray) -> np.ndarray:
+    from scipy.special import erfc
+    return 0.5 * erfc(-x / np.sqrt(2.0))
+
+
+def process_options_data_lib(
+    options_df: pd.DataFrame,
+    stock_price: float,
+    current_date: str = None,
+    risk_free_rate: float = 0.05,
+    verbose: bool = False,
+    fast_mode: bool = True,
+    iv_strategy: str = 'per_expiry',
+    engine: str = 'auto'
+) -> pd.DataFrame:
+    t_start = perf_counter()
     calculator = OptionsCalculatorLib(risk_free_rate)
-    
-    # Create a copy to avoid modifying original
     df = options_df.copy()
-    
-    # Filter for options only (exclude futures)
-    df = df[df['INSTRUMENT'] == 'OPTIDX'].copy()
-    
-    # Calculate days to expiry
-    df['DAYS_TO_EXPIRY'] = df['EXPIRY_DT'].apply(
-        lambda x: calculate_expiry_days(x, current_date)
-    )
-    
-    # Filter out invalid options before processing
+    if 'INSTRUMENT' in df.columns:
+        df = df[df['INSTRUMENT'].isin(['OPTIDX', 'OPTSTK'])].copy()
+    df['DAYS_TO_EXPIRY'] = df['EXPIRY_DT'].apply(lambda x: calculate_expiry_days(x, current_date))
     initial_count = len(df)
-    
-    # Remove options with invalid prices or strikes
-    df = df[df['SETTLE_PR'] > 0].copy()
-    df = df[df['STRIKE_PR'] > 0].copy()
-    
-    # Remove options with zero or negative time to expiry
+    if 'SETTLE_PR' in df.columns:
+        df = df[df['SETTLE_PR'] > 0].copy()
+    if 'STRIKE_PR' in df.columns:
+        df = df[df['STRIKE_PR'] > 0].copy()
     df = df[df['DAYS_TO_EXPIRY'] > 0].copy()
-    
-    
     filtered_count = len(df)
     removed_count = initial_count - filtered_count
-    
-    if removed_count > 0:
-        print(f"⚠️  Filtered out {removed_count} invalid options (price below intrinsic value, zero prices, etc.)")
-        print(f"   Processing {filtered_count} valid options out of {initial_count} total")
-    
+    if verbose:
+        print(f"process_options_data: start rows={initial_count}, filtered={filtered_count}, removed={removed_count}")
     if filtered_count == 0:
-        raise ValueError("No valid options found after filtering. Check data quality and stock price.")
-    
-    # Initialize new columns
-    metrics_columns = ['delta', 'gamma', 'theta', 'vega', 'rho', 'implied_volatility', 
-                      'moneyness', 'time_value', 'breakeven', 'probability_itm', 'intrinsic_value']
-    
+        return pd.DataFrame()
+
+    # Prepare output columns
+    metrics_columns = [
+        'delta', 'gamma', 'theta', 'vega', 'rho', 'implied_volatility',
+        'moneyness', 'time_value', 'breakeven', 'probability_itm', 'intrinsic_value'
+    ]
     for col in metrics_columns:
         df[col] = np.nan
-    
-    # Calculate metrics for each option
-    failed_rows = []
-    for idx, row in df.iterrows():
-        try:
-            S = float(stock_price)
-            K = float(row['STRIKE_PR'])
-            T = float(row['DAYS_TO_EXPIRY'])
-            option_price = float(row['SETTLE_PR'])
-            option_type = str(row['OPTION_TYP'])
-            
-            # Validate that all numeric parameters are valid
-            if not all(isinstance(x, (int, float)) and not np.isnan(x) for x in [S, K, T, option_price]):
-                raise ValueError(f"Invalid numeric parameters: S={S}, K={K}, T={T}, price={option_price}")
-            
-            metrics = calculator.calculate_option_metrics(
-                S, K, T, option_price, option_type
-            )
-            
-            for metric_name, value in metrics.items():
-                df.at[idx, metric_name] = value
-                
-        except (ValueError, TypeError) as e:
-            failed_rows.append({
-                'index': idx,
-                'symbol': row.get('SYMBOL', 'Unknown'),
-                'strike': row.get('STRIKE_PR', 'Unknown'),
-                'option_type': row.get('OPTION_TYP', 'Unknown'),
-                'error': str(e)
-            })
-    
-    if failed_rows:
-        error_msg = f"Failed to process {len(failed_rows)} options rows:\n"
-        for row in failed_rows[:5]:  # Show first 5 errors
-            error_msg += f"  Row {row['index']}: {row['symbol']} {row['strike']} {row['option_type']} - {row['error']}\n"
-        if len(failed_rows) > 5:
-            error_msg += f"  ... and {len(failed_rows) - 5} more errors\n"
-        print(error_msg)
-    
+
+    # Vectorized IV for all rows via py_vollib_vectorized
+    t_iv_start = perf_counter()
+    flags = np.where(df['OPTION_TYP'].values == 'CE', 'c', 'p')
+    S_arr = np.full(len(df), float(stock_price), dtype='float64')
+    K_arr = df['STRIKE_PR'].values.astype('float64')
+    T_arr = df['DAYS_TO_EXPIRY'].values.astype('float64')
+    r_arr = np.full(len(df), float(risk_free_rate), dtype='float64')
+    prices = df['SETTLE_PR'].values.astype('float64')
+    iv_arr = bs_iv.implied_volatility(prices, S_arr, K_arr, T_arr, r_arr, flags)
+    # Ensure 1-D numpy array
+    iv_arr = np.asarray(iv_arr, dtype='float64')
+    iv_arr = np.ravel(iv_arr)
+    # Sanitize
+    mask_bad = (~np.isfinite(iv_arr)) | (iv_arr <= 0)
+    if np.any(mask_bad):
+        good = iv_arr[~mask_bad]
+        fallback = float(np.median(good)) if good.size > 0 else 0.25
+        iv_arr = np.where(mask_bad, fallback, iv_arr)
+    sigma_series = pd.Series(iv_arr, index=df.index)
+    if verbose:
+        dt_iv = perf_counter() - t_iv_start
+        print(f"IV(vectorized) solved {len(df)} rows in {dt_iv:.3f}s")
+
+    # Vectorized greeks using py_vollib_vectorized
+    t_greeks_start = perf_counter()
+    S_arr = np.full_like(sigma_series.values.astype('float64'), float(stock_price), dtype='float64')
+    K_arr = df['STRIKE_PR'].values.astype('float64')
+    T_arr = df['DAYS_TO_EXPIRY'].values.astype('float64')
+    sigma_arr = sigma_series.values.astype('float64')
+    is_call_arr = (df['OPTION_TYP'].values == 'CE')
+
+    flags = np.where(is_call_arr, 'c', 'p')
+    r_arr = np.full(len(df), float(risk_free_rate), dtype='float64')
+    greeks_dict = get_all_greeks(flags, S_arr, K_arr, T_arr, r_arr, sigma_arr,
+                                 model='black_scholes', return_as='dict')
+    df['delta'] = greeks_dict['delta']
+    df['gamma'] = greeks_dict['gamma']
+    df['theta'] = greeks_dict['theta']
+    df['vega'] = greeks_dict['vega']
+    df['rho'] = greeks_dict['rho']
+    df['implied_volatility'] = sigma_arr
+
+    # Other metrics (vectorized)
+    df['moneyness'] = S_arr / K_arr
+    intrinsic_call = np.maximum(0.0, S_arr - K_arr)
+    intrinsic_put = np.maximum(0.0, K_arr - S_arr)
+    is_call_num = is_call_arr.astype('float64')
+    intrinsic = is_call_num * intrinsic_call + (1.0 - is_call_num) * intrinsic_put
+    prices = df['SETTLE_PR'].values.astype('float64')
+    df['time_value'] = prices - intrinsic
+    df['breakeven'] = np.where(is_call_arr, K_arr + prices, K_arr - prices)
+    # probability ITM ~ N(d2) for calls, N(-d2) for puts
+    small = 1e-12
+    T_arr2 = np.clip(T_arr, small, None)
+    sigma_arr2 = np.clip(sigma_arr, small, None)
+    d1 = (np.log(S_arr / K_arr) + (risk_free_rate + 0.5 * sigma_arr2 * sigma_arr2) * T_arr2) / (sigma_arr2 * np.sqrt(T_arr2))
+    d2 = d1 - sigma_arr2 * np.sqrt(T_arr2)
+    prob_itm = np.where(is_call_arr, _norm_cdf(d2), _norm_cdf(-d2))
+    df['probability_itm'] = prob_itm
+    df['intrinsic_value'] = intrinsic
+
+    if verbose:
+        dt_greeks = perf_counter() - t_greeks_start
+        dt_total = perf_counter() - t_start
+        print(f"Greeks(vectorized) computed in {dt_greeks:.3f}s; total process time {dt_total:.3f}s for {len(df)} rows")
+
     return df
 
 
@@ -567,7 +383,7 @@ if __name__ == "__main__":
     sigma = 0.3  # 30% volatility
     
     print("=== Options Calculator (Library-based) Test ===")
-    print(f"py_vollib available: {PY_VOLLIB_AVAILABLE}")
+    print("py_vollib available: True")
     print(f"QuantLib available: {QUANTLIB_AVAILABLE}")
     print(f"Stock Price: {S}")
     print(f"Strike Price: {K}")

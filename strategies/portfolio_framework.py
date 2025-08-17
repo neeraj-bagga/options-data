@@ -269,18 +269,45 @@ class PortfolioBacktester:
 
     def _enforce_neutrality_and_theta_cap(self, date: str, buying_power: float):
         beta_delta, theta_sum_daily = self._portfolio_greeks(date)
+        position_modified = False
+        
         if abs(beta_delta) > self.alloc.neutrality_threshold and self.positions:
-            reduce_ratio = min(0.5, abs(beta_delta))
+            reduce_ratio = min(0.5, abs(beta_delta))  # Only reduce, never increase
             for i in range(len(self.positions)):
-                self.positions[i].quantity = int(self.positions[i].quantity * (1 - reduce_ratio))
+                old_qty = self.positions[i].quantity
+                new_qty = int(old_qty * (1 - reduce_ratio))  # Always reduces quantity
+                if new_qty != old_qty:
+                    self.positions[i].quantity = new_qty
+                    position_modified = True
             self.positions = [p for p in self.positions if p.quantity != 0]
+            if len([p for p in self.positions if p.quantity == 0]) > 0:
+                position_modified = True
+                
         theta_cap_value = self.alloc.theta_cap_pct_per_day * buying_power
         if abs(theta_sum_daily) > 0:
             scale = min(1.0, theta_cap_value / abs(theta_sum_daily))
-            if scale < 1.0:
+            if scale < 1.0:  # Only reduce positions, never increase
                 for i in range(len(self.positions)):
-                    new_qty = int(np.sign(self.positions[i].quantity) * max(1, int(abs(self.positions[i].quantity) * scale)))
-                    self.positions[i].quantity = new_qty
+                    old_qty = self.positions[i].quantity
+                    new_qty = int(np.sign(old_qty) * max(1, int(abs(old_qty) * scale)))
+                    if new_qty != old_qty:
+                        self.positions[i].quantity = new_qty
+                        position_modified = True
+        
+        # Recalculate blocked margin if positions were modified
+        if position_modified:
+            self._recalculate_blocked_margin()
+    
+    def _recalculate_blocked_margin(self):
+        """Recalculate total blocked margin based on current position quantities."""
+        self.blocked_margin = 0.0
+        for pos in self.positions:
+            # Recalculate margin requirement based on current quantity
+            # This is a simplified approach - in reality we'd need to recalculate strategy-level margins
+            original_quantity_per_lot = pos.blocked_margin / abs(pos.quantity) if pos.quantity != 0 else 0
+            current_margin = original_quantity_per_lot * abs(pos.quantity)
+            pos.blocked_margin = current_margin
+            self.blocked_margin += pos.blocked_margin
 
     def _apply_exits(self, date: str):
         rules = self.trading.exit_rules
@@ -312,7 +339,7 @@ class PortfolioBacktester:
                 still_open.append(pos)
         self.positions = still_open
 
-    def _open_positions_for_symbol(self, symbol: str, date: str, capital_alloc: float):
+    def _open_positions_for_symbol(self, symbol: str, date: str, capital_alloc: float, available_margin: float):
         options_df = self.loader.load_options_data(symbol, date)
         px = self.loader.get_stock_price(symbol, date)
         if options_df is None or px is None:
@@ -354,11 +381,10 @@ class PortfolioBacktester:
         # Calculate margin requirement for the entire strategy using strategy-specific method
         strategy_margin = self._calculate_strategy_margin(candidates, lot_size)
         
-        # Check if we have enough available margin
-        available_margin = capital_alloc - self.blocked_margin
-        if strategy_margin > available_margin:
-            # print(f"DEBUG {symbol}: Skipping strategy - need {strategy_margin:.0f}, available {available_margin:.0f}")
-            return  # Skip entire strategy - not enough margin
+        # Check if we have enough available margin (passed from caller)
+        # if strategy_margin > available_margin:
+        #     print(f"DEBUG {symbol}: Skipping strategy - need {strategy_margin:.0f}, available {available_margin:.0f}")
+        #     return  # Skip entire strategy - not enough margin relative to total capital
         
         # Calculate how many lots we can afford
         max_lots_by_margin = int(available_margin / (strategy_margin / lot_size))
@@ -431,13 +457,24 @@ class PortfolioBacktester:
 
             self._apply_exits(d)
 
-            # Open new positions every day
-            self._open_positions_for_symbol(self.trading.symbol_index, d, index_cap)
-            if symbols_stocks:
-                stock_symbol = symbols_stocks[i % len(symbols_stocks)]
-                self._open_positions_for_symbol(stock_symbol, d, stock_cap)
+            # Check if we can open new positions based on global margin limit
+            iv_alloc_pct = self._compute_allocation_by_iv(self.trading.symbol_index, d)
+            max_allowable_margin = self.capital * iv_alloc_pct
+            available_margin = max_allowable_margin - self.blocked_margin
+            
+            if available_margin > 0:
+                # Open new positions only if we have available margin
+                self._open_positions_for_symbol(self.trading.symbol_index, d, index_cap, available_margin)
+                if symbols_stocks:
+                    stock_symbol = symbols_stocks[i % len(symbols_stocks)]
+                    # Recalculate available margin after opening index positions
+                    remaining_margin = max_allowable_margin - self.blocked_margin
+                    if remaining_margin > 0:
+                        self._open_positions_for_symbol(stock_symbol, d, stock_cap, remaining_margin)
+            # else:
+            #     print(f"DEBUG [{d}]: No margin available - blocked {self.blocked_margin:.0f}, max_allowed {max_allowable_margin:.0f}, available {available_margin:.0f}")
 
-            self._enforce_neutrality_and_theta_cap(d, buying_power)
+            #self._enforce_neutrality_and_theta_cap(d, buying_power)
 
             # Periodically print current positions for visibility
             if (

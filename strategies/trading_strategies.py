@@ -85,6 +85,38 @@ class ShortStrangle:
             })
         return positions
 
+    def calculate_margin_requirement(self, positions: List[Dict[str, Any]]) -> float:
+        """Calculate margin requirement for short strangle strategy.
+        
+        Margin = higher of the two legs + 50% of smaller leg premium (netting benefit)
+        """
+        if len(positions) != 2:
+            return sum(self._calculate_naked_margin(p) for p in positions)
+            
+        # Calculate margin for each leg
+        leg1_margin = self._calculate_naked_margin(positions[0])
+        leg2_margin = self._calculate_naked_margin(positions[1])
+        
+        # For strangle: higher margin leg + premium from smaller leg (some netting benefit)
+        higher_margin = max(leg1_margin, leg2_margin)
+        smaller_premium = min(abs(positions[0]['quantity'] * positions[0]['price']), 
+                             abs(positions[1]['quantity'] * positions[1]['price']))
+        
+        return higher_margin + smaller_premium * 0.5  # 50% of smaller leg premium
+    
+    def _calculate_naked_margin(self, position: Dict[str, Any]) -> float:
+        """Margin for naked option = 20% of underlying + premium + commission"""
+        strike = position['strike']
+        quantity = position['quantity'] 
+        price = position['price']
+        
+        underlying_value = abs(strike * quantity)
+        margin_base = 0.20 * underlying_value
+        net_premium = quantity * price  # negative for short (credit)
+        commission = 0.001 * abs(quantity * price)
+        
+        return max(0, margin_base - net_premium + commission)
+
 
 class IronCondor:
     def __init__(self, params: IronCondorParams, exit_rules: ExitRules):
@@ -165,3 +197,53 @@ class IronCondor:
             'theta': float(long_put.get('theta', 0.0)), 'quantity': 1
         })
         return positions
+
+    def calculate_margin_requirement(self, positions: List[Dict[str, Any]]) -> float:
+        """Calculate margin requirement for iron condor strategy.
+        
+        Margin = max width between strikes + net premium (risk is limited by long wings)
+        """
+        if len(positions) != 4:
+            return sum(self._calculate_naked_margin(p) for p in positions)
+        
+        # Separate calls and puts
+        calls = [p for p in positions if p['option_type'] == 'CE']
+        puts = [p for p in positions if p['option_type'] == 'PE']
+        
+        if len(calls) != 2 or len(puts) != 2:
+            return sum(self._calculate_naked_margin(p) for p in positions)
+        
+        # Calculate spread widths
+        call_strikes = [p['strike'] for p in calls]
+        put_strikes = [p['strike'] for p in puts]
+        
+        call_width = abs(max(call_strikes) - min(call_strikes))
+        put_width = abs(max(put_strikes) - min(put_strikes))
+        
+        # Max loss is the wider spread
+        max_width = max(call_width, put_width)
+        
+        # Calculate net premium (credits received - debits paid)
+        net_premium = sum(p['quantity'] * p['price'] for p in positions)
+        
+        # Calculate total premium value for commission
+        total_premium_value = sum(abs(p['quantity'] * p['price']) for p in positions)
+        commission = 0.001 * total_premium_value
+        
+        # Iron condor margin = max width of spread + commission - net credit received
+        margin = max_width * abs(positions[0]['quantity']) - net_premium + commission
+        
+        return max(0, margin)
+    
+    def _calculate_naked_margin(self, position: Dict[str, Any]) -> float:
+        """Margin for naked option = 20% of underlying + premium + commission"""
+        strike = position['strike']
+        quantity = position['quantity'] 
+        price = position['price']
+        
+        underlying_value = abs(strike * quantity)
+        margin_base = 0.20 * underlying_value
+        net_premium = quantity * price  # negative for short (credit)
+        commission = 0.001 * abs(quantity * price)
+        
+        return max(0, margin_base - net_premium + commission)

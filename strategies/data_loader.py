@@ -169,7 +169,7 @@ class OptionsDataLoader:
             if use_cache:
                 self._options_cache[cache_key] = df
             
-            print(f"✅ Loaded options data for {symbol} on {date}: {len(df)} records")
+            #print(f"✅ Loaded options data for {symbol} on {date}: {len(df)} records")
             return df
             
         except Exception as e:

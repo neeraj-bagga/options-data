@@ -163,7 +163,7 @@ class DataQuery:
             
             # Read the CSV file
             df = pd.read_csv(filepath)
-            print(f"✅ Loaded options data for {symbol} on {date}: {len(df)} records")
+            #print(f"✅ Loaded options data for {symbol} on {date}: {len(df)} records")
             return df
             
         except ValueError:

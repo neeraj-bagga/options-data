@@ -42,13 +42,13 @@ def main():
     trading = TradingConfig(
         symbol_index='nifty',
         symbols_stocks=to_summarize,
-        start_date=None,  # auto from index availability
-        end_date=None,    # auto from index availability
-        initial_capital=1_000_000.0,
+        start_date=None,  # Use full available data range
+        end_date=None,    # Use full available data range
+        initial_capital=10_000_000.0,
         use_strangle=True,
         use_iron_condor=True,
-        print_positions_every=10,
-        debug_timings=True,
+        print_positions_every=20,
+        debug_timings=False,
         fast_greeks=True,
         iv_strategy='per_expiry',
     )

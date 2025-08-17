@@ -26,6 +26,7 @@ from .trading_strategies import (
     ShortStrangle, ShortStrangleParams, IronCondor, IronCondorParams, ExitRules
 )
 from .options_utils_lib import process_options_data_lib
+from .stocks import get_lot_size
 
 
 @dataclass
@@ -36,7 +37,7 @@ class AllocationConfig:
     index_pct: float = 0.75
     stock_pct: float = 0.25
     theta_cap_pct_per_day: float = 0.002  # 0.2% per-day on total buying power
-    neutrality_threshold: float = 0.05    # allowable deviation in beta*delta neutrality
+    neutrality_threshold: float = 0.06    # allowable deviation in beta*delta neutrality
 
 
 @dataclass
@@ -45,14 +46,13 @@ class TradingConfig:
     symbols_stocks: Optional[List[str]] = None  # if None, auto-pick from loader
     start_date: Optional[str] = None
     end_date: Optional[str] = None
-    initial_capital: float = 1000000.0
+    initial_capital: float = 10000000.0
 
     # Default strategies per regime (can be extended)
     use_strangle: bool = True
     use_iron_condor: bool = True
 
-    # Reduce turnover: open new positions every N days (e.g., weekly)
-    entry_frequency_days: int = 10
+
 
     strangle_params: ShortStrangleParams = field(default_factory=ShortStrangleParams)
     iron_params: IronCondorParams = field(default_factory=IronCondorParams)
@@ -60,7 +60,7 @@ class TradingConfig:
 
     # Diagnostics
     print_positions_every: Optional[int] = None  # e.g., 10 → print every 10 steps
-    debug_timings: bool = False                  # print timing logs
+    debug_timings: bool = True                  # print timing logs
 
     # Performance knobs for options processing
     fast_greeks: bool = True                     # use vectorized greeks + grouped IV
@@ -76,6 +76,7 @@ class Position:
     quantity: int # positive for long, negative for short
     entry_price: float
     entry_date: str
+    blocked_margin: float  # Margin blocked for this position
 
 
 class PortfolioBacktester:
@@ -86,6 +87,7 @@ class PortfolioBacktester:
         self.positions: List[Position] = []
         self.daily_records: List[Dict[str, Any]] = []
         self.capital = trading.initial_capital
+        self.blocked_margin = 0.0  # Total margin currently blocked
 
         # Strategy instances
         self.strangle = ShortStrangle(trading.strangle_params, trading.exit_rules)
@@ -97,28 +99,84 @@ class PortfolioBacktester:
         # Cache processed options by (symbol, date)
         self._processed_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
 
+    def _calculate_strategy_margin(self, candidates: List[Dict[str, Any]], lot_size: int) -> float:
+        """Calculate margin requirement using the appropriate strategy's margin method."""
+        if len(candidates) == 0:
+            return 0.0
+        
+        # Convert candidates to positions format for margin calculation
+        strategy_positions = []
+        for c in candidates:
+            qty_sign = -1 if c['action'] == 'sell' else 1
+            strategy_positions.append({
+                'strike': float(c['strike']),
+                'quantity': qty_sign * lot_size,
+                'price': float(c['price']),
+                'option_type': c['option_type'],
+                'action': c['action']
+            })
+        
+        # Determine which strategy to use based on candidates and use its margin calculation
+        if len(candidates) == 2:
+            # Short Strangle
+            return self.strangle.calculate_margin_requirement(strategy_positions)
+        elif len(candidates) == 4:
+            # Iron Condor
+            return self.condor.calculate_margin_requirement(strategy_positions)
+        else:
+            # Fallback to naked margin for unknown strategies
+            return self._calculate_naked_margin_fallback(strategy_positions[0])
+    
+    def _calculate_naked_margin_fallback(self, position: Dict[str, Any]) -> float:
+        """Fallback margin calculation for unknown strategies"""
+        strike = position['strike']
+        quantity = position['quantity'] 
+        price = position['price']
+        
+        underlying_value = abs(strike * quantity)
+        margin_base = 0.20 * underlying_value
+        net_premium = quantity * price  # negative for short (credit)
+        commission = 0.001 * abs(quantity * price)
+        
+        return max(0, margin_base - net_premium + commission)
+
     def _print_current_positions(self, date: str) -> None:
         if self.trading.print_positions_every is None:
             return
+        # Compute current portfolio value (capital + unrealized PnL on open positions)
+        unrealized_pnl = 0.0
+        if self.positions:
+            for p in self.positions:
+                cur = self._current_option_price(p.symbol, date, p.option_type, p.strike, p.expiry)
+                if cur is None:
+                    continue
+                if p.quantity >= 0:  # Long position
+                    unrealized_pnl += p.quantity * (cur - p.entry_price)
+                else:  # Short position
+                    unrealized_pnl += abs(p.quantity) * (p.entry_price - cur)
+        total_value = self.capital + unrealized_pnl
         if not self.positions:
-            print(f"[{date}] Open positions: 0")
+            print(f"[{date}] Open positions: 0 | Portfolio Value = {total_value:,.2f}")
             return
         parts: List[str] = []
         for p in self.positions:
+            lot_size = get_lot_size(p.symbol)
+            lots = abs(p.quantity) // lot_size
             parts.append(
-                f"{p.symbol} {p.option_type} {int(p.strike)} {p.expiry} qty={p.quantity} entry={p.entry_price:.2f}"
+                f"{p.symbol} {p.option_type} {int(p.strike)} {p.expiry} lots={lots} qty={p.quantity} entry={p.entry_price:.2f}"
             )
-        print(f"[{date}] Open positions ({len(self.positions)}): " + "; ".join(parts))
+        print(f"[{date}] Open positions ({len(self.positions)}): " + "; ".join(parts) + f" | Portfolio Value = {total_value:,.2f} | Blocked Margin = {self.blocked_margin:,.2f}")
 
     def _date_range(self, start: str, end: str) -> List[str]:
-        start_dt = datetime.strptime(start, '%Y-%m-%d')
-        end_dt = datetime.strptime(end, '%Y-%m-%d')
-        dates = []
-        cur = start_dt
-        while cur <= end_dt:
-            dates.append(cur.strftime('%Y-%m-%d'))
-            cur += timedelta(days=1)
-        return dates
+        """Generate list of trading days between start and end dates."""
+        # Get all available trading days from the index symbol
+        all_trading_days = self.loader.get_available_dates(self.trading.symbol_index)
+        if not all_trading_days:
+            return []
+        
+        # Filter to the requested range
+        trading_days = [d for d in all_trading_days if start <= d <= end]
+        return trading_days
 
     def _available_range(self, symbol: str) -> Optional[Tuple[str, str]]:
         dates = self.loader.get_available_dates(symbol)
@@ -146,8 +204,13 @@ class PortfolioBacktester:
         )
         if mask.any():
             row = df[mask].iloc[0]
-            price_col = 'SETTLE_PR' if 'SETTLE_PR' in row else 'CLOSE'
-            return float(row.get(price_col, np.nan))
+            # Prefer settlement price when available, fallback to close
+            price_col = 'SETTLE_PR' if 'SETTLE_PR' in df.columns else 'CLOSE'
+            val = row.get(price_col, np.nan)
+            try:
+                return float(val)
+            except Exception:
+                return None
         return None
 
     def _get_processed(self, symbol: str, date: str) -> pd.DataFrame:
@@ -160,7 +223,6 @@ class PortfolioBacktester:
             self._processed_cache[key] = cached
             return cached
         # compute and persist
-        t0 = perf_counter()
         opt = self.loader.load_options_data(symbol, date)
         px = self.loader.get_stock_price(symbol, date)
         if opt is None or px is None:
@@ -171,16 +233,12 @@ class PortfolioBacktester:
                     opt,
                     float(px),
                     date,
-                    verbose=self.trading.debug_timings,
+                    verbose=False,  # Disable verbose output for speed
                     fast_mode=self.trading.fast_greeks,
                     iv_strategy=self.trading.iv_strategy,
                 )
             except Exception:
                 dfp = pd.DataFrame()
-        t1 = perf_counter()
-        if self.trading.debug_timings:
-            rows = 0 if dfp is None else len(dfp)
-            print(f"[process] {symbol} {date}: rows={rows} time={(t1 - t0):.3f}s fast={self.trading.fast_greeks} iv='{self.trading.iv_strategy}'")
         if dfp is not None and not dfp.empty:
             self.loader.save_processed_options_cache(symbol, date, dfp)
         self._processed_cache[key] = dfp
@@ -244,6 +302,11 @@ class PortfolioBacktester:
                 dte_days = 9999
             time_exit = dte_days <= rules.max_days_to_expiry
             if reached_tp or reached_sl or time_exit:
+                # Close position: pay/receive current price and realize PnL
+                capital_change = pos.quantity * cur_price  # reverse of opening trade
+                self.capital += capital_change
+                # Release blocked margin
+                self.blocked_margin -= pos.blocked_margin
                 continue
             else:
                 still_open.append(pos)
@@ -262,21 +325,81 @@ class PortfolioBacktester:
         if not candidates:
             return
         per_trade_cap = capital_alloc / max(1, len(candidates))
+        lot_size = get_lot_size(symbol)
+        
+        # Debug: Print capital allocation details
+        # if len(candidates) > 0:
+        #     print(f"DEBUG {symbol}: capital_alloc={capital_alloc:,.0f}, candidates={len(candidates)}, per_trade_cap={per_trade_cap:,.0f}")
+        
+        # Calculate margin for the entire strategy (all candidates together)
+        if not candidates:
+            return
+            
+        # Convert candidates to the format expected by margin calculation
+        strategy_positions = []
+        for i, c in enumerate(candidates):
+            price = float(c['price'])
+            strike = float(c['strike'])
+            qty_sign = -1 if c['action'] == 'sell' else 1
+            test_quantity = qty_sign * lot_size
+            
+            strategy_positions.append({
+                'strike': strike,
+                'quantity': test_quantity,
+                'price': price,
+                'option_type': c['option_type'],
+                'action': c['action']
+            })
+        
+        # Calculate margin requirement for the entire strategy using strategy-specific method
+        strategy_margin = self._calculate_strategy_margin(candidates, lot_size)
+        
+        # Check if we have enough available margin
+        available_margin = capital_alloc - self.blocked_margin
+        if strategy_margin > available_margin:
+            # print(f"DEBUG {symbol}: Skipping strategy - need {strategy_margin:.0f}, available {available_margin:.0f}")
+            return  # Skip entire strategy - not enough margin
+        
+        # Calculate how many lots we can afford
+        max_lots_by_margin = int(available_margin / (strategy_margin / lot_size))
+        max_lots_by_capital = int(per_trade_cap / max(1.0, sum(abs(c['price']) for c in candidates) * lot_size))
+        
+        # Use the more restrictive limit  
+        affordable_lots = max(1, min(max_lots_by_margin, max_lots_by_capital))
+        
+        # Scale the strategy margin by actual lots
+        actual_strategy_margin = strategy_margin * (affordable_lots / 1.0)
+        
+        # print(f"DEBUG {symbol}: Strategy margin={strategy_margin:.0f}, lots={affordable_lots}, total_margin={actual_strategy_margin:.0f}")
+        
+        # Open all positions in the strategy
+        total_capital_change = 0.0
         for c in candidates:
             price = float(c['price'])
+            strike = float(c['strike'])
             qty_sign = -1 if c['action'] == 'sell' else 1
-            lot_qty = max(1, int(per_trade_cap / max(1.0, price * 100)))
+            quantity = qty_sign * affordable_lots * lot_size
+            
+            # Update capital 
+            capital_change = -quantity * price  # negative quantity means short (receive premium)
+            total_capital_change += capital_change
+            
             self.positions.append(
                 Position(
                     symbol=symbol,
                     option_type=c['option_type'],
-                    strike=float(c['strike']),
+                    strike=strike,
                     expiry=str(c['expiry']),
-                    quantity=qty_sign * lot_qty,
+                    quantity=quantity,
                     entry_price=price,
                     entry_date=date,
+                    blocked_margin=actual_strategy_margin / len(candidates),  # Split margin across positions
                 )
             )
+        
+        # Update portfolio capital and blocked margin
+        self.capital += total_capital_change
+        self.blocked_margin += actual_strategy_margin
 
     def backtest(self) -> Dict[str, Any]:
         idx_range = self._available_range(self.trading.symbol_index)
@@ -308,12 +431,11 @@ class PortfolioBacktester:
 
             self._apply_exits(d)
 
-            # Open new positions only on scheduled entry days
-            if i % max(1, self.trading.entry_frequency_days) == 0:
-                self._open_positions_for_symbol(self.trading.symbol_index, d, index_cap)
-                if symbols_stocks:
-                    stock_symbol = symbols_stocks[i % len(symbols_stocks)]
-                    self._open_positions_for_symbol(stock_symbol, d, stock_cap)
+            # Open new positions every day
+            self._open_positions_for_symbol(self.trading.symbol_index, d, index_cap)
+            if symbols_stocks:
+                stock_symbol = symbols_stocks[i % len(symbols_stocks)]
+                self._open_positions_for_symbol(stock_symbol, d, stock_cap)
 
             self._enforce_neutrality_and_theta_cap(d, buying_power)
 
@@ -326,17 +448,19 @@ class PortfolioBacktester:
             ):
                 self._print_current_positions(d)
 
-            daily_value = 0.0
+            # Calculate unrealized PnL of open positions
+            unrealized_pnl = 0.0
             for pos in self.positions:
                 cur = self._current_option_price(pos.symbol, d, pos.option_type, pos.strike, pos.expiry)
                 if cur is None:
                     continue
-                if pos.quantity >= 0:
-                    daily_value += pos.quantity * (cur - pos.entry_price)
-                else:
-                    daily_value += abs(pos.quantity) * (pos.entry_price - cur)
+                # Unrealized PnL = current value - cost basis
+                if pos.quantity >= 0:  # Long position
+                    unrealized_pnl += pos.quantity * (cur - pos.entry_price)
+                else:  # Short position  
+                    unrealized_pnl += abs(pos.quantity) * (pos.entry_price - cur)
 
-            total_value = self.capital + daily_value
+            total_value = self.capital + unrealized_pnl
             self.daily_records.append({'date': d, 'total_value': total_value})
 
         df = pd.DataFrame(self.daily_records)
